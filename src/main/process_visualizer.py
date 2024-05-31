@@ -30,7 +30,7 @@ class BasicVispyVisualization:
             base += (hash(row[tertiary]) % self.team_spacing)
         return base
 
-    def visualize(self, scaling_factor=10.0):
+    def visualize(self, height_scaling_factor=10.0):
         canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
         view = canvas.central_widget.add_view()
 
@@ -59,7 +59,7 @@ class BasicVispyVisualization:
                 start = [case_data.iloc[i]['X'], case_data.iloc[i]['Y'], 0]
                 end = [case_data.iloc[i + 1]['X'], case_data.iloc[i + 1]['Y'], 0]
                 duration = case_data.iloc[i + 1]['Time Since Last Modified']
-                arc_height = duration / scaling_factor  # Arbitrary scaling factor for arc height
+                arc_height = duration / height_scaling_factor  # Arbitrary scaling factor for arc height
 
                 intermediate_point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, arc_height]
                 line_color = self.role_colors[case_data.iloc[i]['Role']]
@@ -74,7 +74,7 @@ if __name__ == '__main__':
     argparser.add_argument('--team_spacing', type=int, default=20)
     argparser.add_argument('--dept_spacing', type=int, default=100)
     argparser.add_argument('--div_spacing', type=int, default=100)
-    argparser.add_argument('--scaling_factor', type=float, default=10.0)
+    argparser.add_argument('--height_scaling_factor', type=float, default=10.0)
     args = argparser.parse_args()
 
     if not os.path.exists('data/business_process_data.csv'):
@@ -88,4 +88,4 @@ if __name__ == '__main__':
         , dept_spacing=args.dept_spacing
         , div_spacing=args.div_spacing
     )
-    visualizer.visualize(scaling_factor=args.scaling_factor)
+    visualizer.visualize(scaling_factor=args.height_scaling_factor)
