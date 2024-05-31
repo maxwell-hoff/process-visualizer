@@ -13,7 +13,7 @@ class BasicVispyVisualization:
         self.dept_spacing = dept_spacing
         self.div_spacing = div_spacing
         self.data['X'] = self.data.apply(lambda row: self.calculate_position(row, 'Division', 'Department', 'Team'), axis=1)
-        self.data['Y'] = self.data.apply(lambda row: self.calculate_position(row, 'Role', None, None), axis=1)
+        self.data['Y'] = self.data['Case Updated Date'].apply(lambda date: (pd.to_datetime(date) - pd.to_datetime('2000-01-01')).days)
         self.role_colors = {
             'Manager': 'red',
             'Analyst': 'green',
@@ -30,7 +30,7 @@ class BasicVispyVisualization:
             base += (hash(row[tertiary]) % self.team_spacing)
         return base
 
-    def visualize(self, scaling_factor=10 : int):
+    def visualize(self, scaling_factor=10.0):
         canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
         view = canvas.central_widget.add_view()
 
@@ -76,9 +76,11 @@ if __name__ == '__main__':
     argparser.add_argument('--div_spacing', type=int, default=100)
     argparser.add_argument('--scaling_factor', type=float, default=10.0)
     args = argparser.parse_args()
+
     if not os.path.exists('data/business_process_data.csv'):
         raise FileNotFoundError('Business data not found. Please generate the data first.')
     business_data = pd.read_csv('data/business_process_data.csv')
+    
     visualizer = BasicVispyVisualization(
         business_data
         , case_spacing=args.case_spacing
