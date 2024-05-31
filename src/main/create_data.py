@@ -3,9 +3,10 @@ import numpy as np
 import random
 import subprocess
 from datetime import datetime, timedelta
+import argparse
 
 class BusinessProcessDataGenerator:
-    def __init__(self, num_rows=100000):
+    def __init__(self, num_rows=10000):
         self.num_rows = num_rows
         self.employee_ids = range(1, 501)
         self.client_ids = range(1, 1001)
@@ -109,7 +110,10 @@ class BusinessProcessDataGenerator:
         return last_status
 
 if __name__ == '__main__':  
-    generator = BusinessProcessDataGenerator()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--num_rows', type=int, default=100000)
+    args = parser.parse_args()
+    generator = BusinessProcessDataGenerator(num_rows=args.num_rows)
     business_data = generator.generate()
     if 'data/business_process_data.csv' in subprocess.run(['ls', 'data'], capture_output=True).stdout.decode():
         subprocess.run(['rm', 'data/business_process_data.csv'])
