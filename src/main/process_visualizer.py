@@ -4,7 +4,7 @@ import random
 import pandas as pd
 import numpy as np
 from vispy import app, scene
-from vispy.color import Color
+from vispy.color import Color, get_colormap, Colormap
 import argparse
 import time
 from vispy.util import keys
@@ -86,6 +86,19 @@ class BasicVispyVisualization:
             'Support': 'magenta'
         }
 
+        # Continuous colormap for link colouring based on employee-count progression
+        def _safe_cmap(primary='plasma', fallback='viridis'):
+            try:
+                return get_colormap(primary)
+            except KeyError:
+                try:
+                    return get_colormap(fallback)
+                except KeyError:
+                    # Final hard-coded gradient (blue → red)
+                    return Colormap([[0.2, 0.2, 1.0, 1.0], [1.0, 0.0, 0.0, 1.0]])
+
+        self.link_cmap = _safe_cmap()
+
         # Pre-compute animated link (arc) geometry (needs __ts__ and positions ready)
         self.links = []
         if self.enable_arcs:
@@ -138,9 +151,15 @@ class BasicVispyVisualization:
                 peak = (start_pos + end_pos) / 2.0
                 peak[2] = mid_xy_dist * self.arc_height_factor * scale
 
+                # Determine colour based on how many employees the case visited so far
+                unique_emps_so_far = len(case_df.iloc[:i + 1]['Employee ID'].unique())
+                total_unique_emps = len(case_df['Employee ID'].unique())
+                frac_col = (unique_emps_so_far - 1) / max(1, total_unique_emps - 1)
+                line_color = self.link_cmap.map(np.array([frac_col]))[0]
+
                 line_vis = scene.visuals.Line(
                     pos=np.vstack([start_pos, start_pos]),
-                    color=self.role_colors[start_row['Role']],
+                    color=line_color,
                 )
                 line_vis.visible = False
 
