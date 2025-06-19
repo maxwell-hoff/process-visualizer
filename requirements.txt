@@ -1,0 +1,6 @@
+vispy
+pyobjc-framework-Quartz
+PyQt5
+pandas
+numpy
+datetime
