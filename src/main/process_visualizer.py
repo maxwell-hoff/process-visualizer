@@ -92,11 +92,33 @@ class BasicVispyVisualization:
     # ------------------------------------------------------------------
 
     def _build_links(self):
-        """Create per-transition Line visuals prepared for animated drawing."""
+        """Create per-transition Line visuals prepared for animated drawing.
+
+        Arc height is scaled by the ratio (duration / median_duration).
+        Slow transitions (long duration) therefore arch higher.
+        """
+
+        # ---------- first pass: gather all durations ----------
+        durations = []
+        for _, case_df in self.data.groupby('Case ID'):
+            ts_sorted = case_df['__ts__'].sort_values().values
+            if len(ts_sorted) > 1:
+                durations.extend(np.diff(ts_sorted))
+
+        median_dt = np.median(durations) if durations else 1.0
+        if median_dt == 0:
+            median_dt = 1.0  # fallback to avoid div/0
+
+        # Clamp helper to keep arcs reasonable
+        def _clamp(val, lo=0.3, hi=3.0):
+            return max(lo, min(hi, val))
+
+        # ---------- second pass: create visuals ----------
         for case_id, case_df in self.data.groupby('Case ID'):
             case_df = case_df.sort_values('__ts__')
             if len(case_df) < 2:
                 continue
+
             for i in range(len(case_df) - 1):
                 start_row = case_df.iloc[i]
                 end_row = case_df.iloc[i + 1]
@@ -104,16 +126,20 @@ class BasicVispyVisualization:
                 start_pos = np.array([start_row['X'], start_row['Y'], 0.0], dtype=float)
                 end_pos = np.array([end_row['X'], end_row['Y'], 0.0], dtype=float)
 
+                duration = end_row['__ts__'] - start_row['__ts__']
+                scale = _clamp(duration / median_dt)
+
                 # Peak point defines a simple quadratic Bezier in 3-D.
                 mid_xy_dist = np.linalg.norm(start_pos[:2] - end_pos[:2])
                 peak = (start_pos + end_pos) / 2.0
-                peak[2] = mid_xy_dist * self.arc_height_factor
+                peak[2] = mid_xy_dist * self.arc_height_factor * scale
 
-                line_vis = scene.visuals.Line(  # start with a degenerate 2-point line
+                line_vis = scene.visuals.Line(
                     pos=np.vstack([start_pos, start_pos]),
                     color=self.role_colors[start_row['Role']],
                 )
-                line_vis.visible = False  # will be shown when animation reaches it
+                line_vis.visible = False
+
                 self.links.append({
                     'start_ts': start_row['__ts__'],
                     'end_ts': end_row['__ts__'],
