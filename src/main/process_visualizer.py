@@ -1,9 +1,12 @@
 import os
+import math
+import random
 import pandas as pd
 import numpy as np
 from vispy import app, scene
 from vispy.color import Color
 import argparse
+import time
 from vispy.util import keys
 
 class CustomTurntablePanCamera(scene.cameras.TurntableCamera):
@@ -45,17 +48,23 @@ class CustomTurntablePanCamera(scene.cameras.TurntableCamera):
         super().viewbox_mouse_event(event)
 
 class BasicVispyVisualization:
-    def __init__(self, data, case_spacing=10, team_spacing=20, dept_spacing=100, div_spacing=200, time_scale=1, height_scaling_factor=10, enable_arcs=True):
+    def __init__(self, data, anim_duration=20, hierarchy=None, height_scaling_factor=10, enable_arcs=True):
         self.data = data
-        self.case_spacing = case_spacing
-        self.team_spacing = team_spacing
-        self.dept_spacing = dept_spacing
-        self.div_spacing = div_spacing
-        self.time_scale = time_scale
+
+        # Hierarchy definition (outer → inner)
+        if hierarchy is None:
+            hierarchy = ['Division', 'Department', 'Team', 'Employee ID']
+        self.hierarchy = hierarchy
+
+        self.anim_duration = anim_duration  # seconds
         self.height_scaling_factor = height_scaling_factor
-        self.data['X'] = self.data.apply(lambda row: self.calculate_position(row, 'Division', 'Department', 'Team'), axis=1)
-        self.data['Y'] = self.data['Case Updated Date'].apply(lambda date: (pd.to_datetime(date) - pd.to_datetime('2000-01-01')).days / self.time_scale)
-        self.data['Z'] = np.zeros(len(self.data))
+
+        # Compute hierarchical nested positions
+        self._assign_nested_positions()
+
+        self.data['__ts__'] = pd.to_datetime(self.data['Case Updated Date']).astype('int64') // 1_000_000_000  # to seconds
+        self.start_ts = self.data['__ts__'].min()
+        self.end_ts = self.data['__ts__'].max()
         self.role_colors = {
             'Manager': 'red',
             'Analyst': 'green',
@@ -64,15 +73,77 @@ class BasicVispyVisualization:
             'Support': 'magenta'
         }
         self.enable_arcs = enable_arcs and len(self.data) <= 20_000
+        self.paused = False
+        self.current_ts = self.start_ts
         self.pan = False
 
-    def calculate_position(self, row, primary, secondary, tertiary):
-        base = hash(row[primary]) % self.div_spacing
-        if secondary:
-            base += (hash(row[secondary]) % self.dept_spacing)
-        if tertiary:
-            base += (hash(row[tertiary]) % self.team_spacing)
-        return base
+    # ------------------------------------------------------------------
+    # Hierarchical layout helpers
+    # ------------------------------------------------------------------
+
+    def _assign_nested_positions(self):
+        """Assign X, Y coordinates to each row based on the hierarchy."""
+
+        # Build nested dictionary representing the hierarchy tree
+        tree = {}
+        for _, row in self.data.iterrows():
+            node = tree
+            for level in self.hierarchy:
+                key = row[level]
+                node = node.setdefault(key, {})
+
+        # Recursively assign rectangles
+        rects = {}  # mapping from path tuple to rectangle (x0,y0,x1,y1)
+
+        def subdivide(node, rect, path):
+            """Recursively allocate rectangles to children."""
+            children = list(node.keys())
+            if not children:
+                return
+            n = len(children)
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
+
+            x0, y0, x1, y1 = rect
+            w = (x1 - x0) / cols
+            h = (y1 - y0) / rows
+
+            for idx, child in enumerate(children):
+                c_col = idx % cols
+                c_row = idx // cols
+                child_rect = (
+                    x0 + c_col * w,
+                    y0 + c_row * h,
+                    x0 + (c_col + 1) * w,
+                    y0 + (c_row + 1) * h,
+                )
+                child_path = path + (child,)
+                rects[child_path] = child_rect
+                subdivide(node[child], child_rect, child_path)
+
+        # Start subdivision with the whole [0,1]x[0,1] square.
+        subdivide(tree, (0.0, 0.0, 1.0, 1.0), tuple())
+
+        # Now assign each row a coordinate inside its employee rectangle path
+        xs = []
+        ys = []
+        rng = random.Random(123)
+        for _, row in self.data.iterrows():
+            # Build path through the hierarchy *excluding the last level* (Employee ID)
+            path = tuple(row[level] for level in self.hierarchy[:-1])
+            leaf_rect = rects[path]
+            x0, y0, x1, y1 = leaf_rect
+            # slightly inset to avoid overlap
+            inset = 0.02 * min(x1 - x0, y1 - y0)
+            x0 += inset
+            y0 += inset
+            x1 -= inset
+            y1 -= inset
+            xs.append(rng.uniform(x0, x1))
+            ys.append(rng.uniform(y0, y1))
+
+        self.data['X'] = xs
+        self.data['Y'] = ys
 
     def adjust_color_brightness(self, color, brightness_factor):
         color = np.array(color.rgb)
@@ -127,7 +198,7 @@ class BasicVispyVisualization:
 
         x = self.data['X'].values
         y = self.data['Y'].values
-        z = self.data['Z'].values
+        z = np.zeros(len(self.data))
 
         positions = np.vstack([x, y, z]).T
         colors = []
@@ -139,13 +210,21 @@ class BasicVispyVisualization:
                 color = self.adjust_color_brightness(base_color, 0.5)  # More transparent color
             colors.append(color)
 
+        self.positions = positions
+        self.colors = np.array(colors)
+
         self.scatter = scene.visuals.Markers()
-        self.scatter.set_data(positions, face_color=colors, size=5)
+        # Initialize with a single invisible point to avoid zero-size arrays
+        dummy_pos = np.array([[0.0, 0.0, 0.0]], dtype=float)
+        dummy_color = np.array([[0.0, 0.0, 0.0, 0.0]], dtype=float)
+        self.scatter.set_data(dummy_pos, face_color=dummy_color, size=5)
         self.view.add(self.scatter)
 
         axis = scene.visuals.XYZAxis(parent=self.view.scene)
         axis.transform = scene.transforms.MatrixTransform()
-        axis.transform.scale([self.div_spacing, self.dept_spacing, self.team_spacing])
+        span_x = max(x) - min(x)
+        span_y = max(y) - min(y)
+        axis.transform.scale([span_x if span_x else 1, span_y if span_y else 1, 1])
         axis.set_data(color='white')
 
         self.text = scene.visuals.Text('', color='white', anchor_x='left', parent=self.view.scene)
@@ -153,6 +232,13 @@ class BasicVispyVisualization:
 
         self.view.camera = CustomTurntablePanCamera(up='z', fov=45)
         canvas.events.mouse_move.connect(self.on_hover)
+
+        # Key controls
+        canvas.events.key_press.connect(self.on_key_press)
+
+        # Animation timer
+        self.t0 = time.perf_counter()
+        self.timer = app.Timer('auto', connect=self.on_timer, start=True)
 
         # Add arcs to connect statuses (optional – can be a performance hog)
         if self.enable_arcs:
@@ -176,14 +262,44 @@ class BasicVispyVisualization:
 
         app.run()
 
+    # ---------------- Animation handlers -----------------
+
+    def _update_scatter(self):
+        """Update scatter visual to display points up to current_ts."""
+        mask = self.data['__ts__'].values <= self.current_ts
+        if mask.any():
+            self.scatter.visible = True
+            self.scatter.set_data(self.positions[mask], face_color=self.colors[mask], size=5)
+        else:
+            self.scatter.visible = False
+
+    def on_timer(self, event):
+        if self.paused:
+            return
+        elapsed = time.perf_counter() - self.t0
+        frac = (elapsed % self.anim_duration) / self.anim_duration
+        self.current_ts = self.start_ts + frac * (self.end_ts - self.start_ts)
+        self._update_scatter()
+
+    def on_key_press(self, event):
+        if event.key == keys.SPACE:
+            self.paused = not self.paused
+            if not self.paused:
+                # resume timeline origin to maintain continuity
+                self.t0 = time.perf_counter() - (self.current_ts - self.start_ts) * self.anim_duration / (self.end_ts - self.start_ts)
+        elif event.key == keys.RIGHT:
+            step = (self.end_ts - self.start_ts) * 0.01  # 1% step
+            self.current_ts = min(self.current_ts + step, self.end_ts)
+            self._update_scatter()
+        elif event.key == keys.LEFT:
+            step = (self.end_ts - self.start_ts) * 0.01
+            self.current_ts = max(self.current_ts - step, self.start_ts)
+            self._update_scatter()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Visualize business process data")
     parser.add_argument('--data_path', type=str, default='data/business_process_data.csv', help="Path to the CSV file containing the data")
-    parser.add_argument('--case_spacing', type=int, default=10, help="Spacing between cases")
-    parser.add_argument('--team_spacing', type=int, default=20, help="Spacing between team members")
-    parser.add_argument('--dept_spacing', type=int, default=100, help="Spacing between departments")
-    parser.add_argument('--div_spacing', type=int, default=200, help="Spacing between divisions")
-    parser.add_argument('--time_scale', type=int, default=1, help="Scale of the time axis")
+    parser.add_argument('--anim_duration', type=int, default=20, help="Duration of the animation")
     parser.add_argument('--height_scaling_factor', type=int, default=10, help="Scaling factor for arc height")
     parser.add_argument('--no_arcs', action='store_true', help="Skip drawing arcs (useful for large datasets)")
     
@@ -192,11 +308,7 @@ if __name__ == '__main__':
     data = pd.read_csv(args.data_path)
     visualizer = BasicVispyVisualization(
         data
-        , case_spacing=args.case_spacing
-        , team_spacing=args.team_spacing
-        , dept_spacing=args.dept_spacing
-        , div_spacing=args.div_spacing
-        , time_scale=args.time_scale
+        , anim_duration=args.anim_duration
         , height_scaling_factor=args.height_scaling_factor
         , enable_arcs=not args.no_arcs
     )
