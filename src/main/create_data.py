@@ -117,7 +117,7 @@ class BusinessProcessDataGenerator:
 
 if __name__ == '__main__':  
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_rows', type=int, default=100000)
+    parser.add_argument('--num_rows', type=int, default=100_000)
     args = parser.parse_args()
     generator = BusinessProcessDataGenerator(num_rows=args.num_rows)
     business_data = generator.generate()

@@ -1,6 +1,7 @@
 vispy
-pyobjc-framework-Quartz
 PyQt5
 pandas
 numpy
+# Only needed on macOS
+pyobjc-framework-Quartz; sys_platform == "darwin"
 datetime

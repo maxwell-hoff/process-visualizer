@@ -6,7 +6,7 @@ from vispy.color import Color
 import argparse
 
 class BasicVispyVisualization:
-    def __init__(self, data, case_spacing=10, team_spacing=20, dept_spacing=100, div_spacing=200, time_scale=1, height_scaling_factor=10):
+    def __init__(self, data, case_spacing=10, team_spacing=20, dept_spacing=100, div_spacing=200, time_scale=1, height_scaling_factor=10, enable_arcs=True):
         self.data = data
         self.case_spacing = case_spacing
         self.team_spacing = team_spacing
@@ -24,6 +24,7 @@ class BasicVispyVisualization:
             'Consultant': 'yellow',
             'Support': 'magenta'
         }
+        self.enable_arcs = enable_arcs and len(self.data) <= 20_000
         self.pan = False
 
     def calculate_position(self, row, primary, secondary, tertiary):
@@ -42,13 +43,40 @@ class BasicVispyVisualization:
             return color * brightness_factor
 
     def on_hover(self, event):
+        """Show tooltip of the data point under the cursor.
+
+        The original implementation relied on an (old) MarkersVisual API
+        providing a ``get_closest`` helper which is no longer available in
+        modern VisPy releases. Rather than hard-crashing every time a mouse
+        move occurs, we:
+
+        1. First check whether the helper exists (legacy VisPy).
+        2. If it doesn't, we simply skip the tooltip logic.  You still have
+           the right-click pan and everything else, just no hover tooltip.  A
+           robust picking implementation using ``MarkerPickingFilter`` could
+           be added later if desired.
+        """
+
         if event.is_dragging:
             return
+
+        if not hasattr(self.scatter, "get_closest"):
+            # API gone – silently ignore hover requests
+            return
+
         p = event.pos
-        nearest, index = self.scatter.get_closest(p)
+        try:
+            nearest, index = self.scatter.get_closest(p)
+        except Exception:
+            # Any unexpected runtime issue, bail out without spamming errors
+            return
+
         if nearest is not None:
             info = self.data.iloc[index]
-            self.text.text = f"Case ID: {info['Case ID']}, Status: {info['Case Status']}, Time: {info['Case Updated Date']}, Employee: {info['Employee ID']}"
+            self.text.text = (
+                f"Case ID: {info['Case ID']}, Status: {info['Case Status']}, "
+                f"Time: {info['Case Updated Date']}, Employee: {info['Employee ID']}"
+            )
             self.text.visible = True
             self.text.pos = p + 10
         else:
@@ -105,21 +133,20 @@ class BasicVispyVisualization:
         canvas.events.mouse_release.connect(self.on_mouse_release)
         canvas.events.mouse_move.connect(self.on_mouse_move)
 
-        self.pan = False
+        # Add arcs to connect statuses (optional – can be a performance hog)
+        if self.enable_arcs:
+            for case_id, case_data in self.data.groupby('Case ID'):
+                case_data = case_data.sort_values('Case Updated Date')
+                for i in range(len(case_data) - 1):
+                    start = [case_data.iloc[i]['X'], case_data.iloc[i]['Y'], 0]
+                    end = [case_data.iloc[i + 1]['X'], case_data.iloc[i + 1]['Y'], 0]
+                    duration = case_data.iloc[i + 1]['Time Since Last Modified']
+                    arc_height = duration / self.height_scaling_factor  # Scaling factor for arc height
 
-        # Add arcs to connect statuses
-        for case_id, case_data in self.data.groupby('Case ID'):
-            case_data = case_data.sort_values('Case Updated Date')
-            for i in range(len(case_data) - 1):
-                start = [case_data.iloc[i]['X'], case_data.iloc[i]['Y'], 0]
-                end = [case_data.iloc[i + 1]['X'], case_data.iloc[i + 1]['Y'], 0]
-                duration = case_data.iloc[i + 1]['Time Since Last Modified']
-                arc_height = duration / self.height_scaling_factor  # Scaling factor for arc height
-
-                intermediate_point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, arc_height]
-                line_color = self.role_colors[case_data.iloc[i]['Role']]
-                line = scene.visuals.Line(pos=np.array([start, intermediate_point, end]), color=line_color)
-                self.view.add(line)
+                    intermediate_point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, arc_height]
+                    line_color = self.role_colors[case_data.iloc[i]['Role']]
+                    line = scene.visuals.Line(pos=np.array([start, intermediate_point, end]), color=line_color)
+                    self.view.add(line)
 
         # Add legend
         for i, (role, color) in enumerate(self.role_colors.items()):
@@ -137,6 +164,7 @@ if __name__ == '__main__':
     parser.add_argument('--div_spacing', type=int, default=200, help="Spacing between divisions")
     parser.add_argument('--time_scale', type=int, default=1, help="Scale of the time axis")
     parser.add_argument('--height_scaling_factor', type=int, default=10, help="Scaling factor for arc height")
+    parser.add_argument('--no_arcs', action='store_true', help="Skip drawing arcs (useful for large datasets)")
     
     args = parser.parse_args()
 
@@ -149,5 +177,6 @@ if __name__ == '__main__':
         , div_spacing=args.div_spacing
         , time_scale=args.time_scale
         , height_scaling_factor=args.height_scaling_factor
+        , enable_arcs=not args.no_arcs
     )
     visualizer.visualize()
