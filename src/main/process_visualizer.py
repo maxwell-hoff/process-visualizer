@@ -24,6 +24,7 @@ class BasicVispyVisualization:
             'Consultant': 'yellow',
             'Support': 'magenta'
         }
+        self.pan = False
 
     def calculate_position(self, row, primary, secondary, tertiary):
         base = hash(row[primary]) % self.div_spacing
@@ -32,6 +33,13 @@ class BasicVispyVisualization:
         if tertiary:
             base += (hash(row[tertiary]) % self.team_spacing)
         return base
+
+    def adjust_color_brightness(self, color, brightness_factor):
+        color = np.array(color.rgb)
+        if brightness_factor > 1.0:
+            return color + (1 - color) * (brightness_factor - 1)
+        else:
+            return color * brightness_factor
 
     def on_hover(self, event):
         if event.is_dragging:
@@ -46,31 +54,58 @@ class BasicVispyVisualization:
         else:
             self.text.visible = False
 
+    def on_mouse_press(self, event):
+        if event.button == 2:  # Right click
+            self.pan = True
+            self.pan_start = event.pos
+
+    def on_mouse_release(self, event):
+        if event.button == 2:  # Right click
+            self.pan = False
+
+    def on_mouse_move(self, event):
+        if self.pan:
+            pan_diff = event.pos - self.pan_start
+            self.view.camera.center += np.array([pan_diff[0], -pan_diff[1], 0]) * 0.01
+            self.pan_start = event.pos
+
     def visualize(self):
         canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
-        view = canvas.central_widget.add_view()
+        self.view = canvas.central_widget.add_view()
 
         x = self.data['X'].values
         y = self.data['Y'].values
         z = self.data['Z'].values
 
         positions = np.vstack([x, y, z]).T
-        colors = [self.role_colors[role] for role in self.data['Role'].values]
+        colors = []
+        for _, row in self.data.iterrows():
+            base_color = Color(self.role_colors[row['Role']])
+            if row['Time Since Last Modified'] > row['Threshold']:
+                color = self.adjust_color_brightness(base_color, 1.5)  # Brighter color
+            else:
+                color = self.adjust_color_brightness(base_color, 0.5)  # More transparent color
+            colors.append(color)
 
         self.scatter = scene.visuals.Markers()
         self.scatter.set_data(positions, face_color=colors, size=5)
-        view.add(self.scatter)
+        self.view.add(self.scatter)
 
-        axis = scene.visuals.XYZAxis(parent=view.scene)
+        axis = scene.visuals.XYZAxis(parent=self.view.scene)
         axis.transform = scene.transforms.MatrixTransform()
         axis.transform.scale([self.div_spacing, self.dept_spacing, self.team_spacing])
         axis.set_data(color='white')
 
-        self.text = scene.visuals.Text('', color='white', anchor_x='left', parent=view.scene)
+        self.text = scene.visuals.Text('', color='white', anchor_x='left', parent=self.view.scene)
         self.text.visible = False
 
-        view.camera = 'turntable'
+        self.view.camera = scene.cameras.TurntableCamera(up='z', fov=45)
         canvas.events.mouse_move.connect(self.on_hover)
+        canvas.events.mouse_press.connect(self.on_mouse_press)
+        canvas.events.mouse_release.connect(self.on_mouse_release)
+        canvas.events.mouse_move.connect(self.on_mouse_move)
+
+        self.pan = False
 
         # Add arcs to connect statuses
         for case_id, case_data in self.data.groupby('Case ID'):
@@ -84,12 +119,13 @@ class BasicVispyVisualization:
                 intermediate_point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, arc_height]
                 line_color = self.role_colors[case_data.iloc[i]['Role']]
                 line = scene.visuals.Line(pos=np.array([start, intermediate_point, end]), color=line_color)
-                view.add(line)
+                self.view.add(line)
 
         # Add legend
         for i, (role, color) in enumerate(self.role_colors.items()):
-            legend_text = scene.visuals.Text(f"{role}", color=color, pos=(5, 5 + i * 20), parent=canvas.scene)
-        
+            legend_text = scene.visuals.Text(f"{role}", color=color, pos=(10, 10 + i * 20), parent=canvas.scene)
+            legend_text.font_size = 12  # Adjust font size if necessary
+
         app.run()
 
 if __name__ == '__main__':

@@ -1,15 +1,15 @@
 import pandas as pd
 import numpy as np
 import random
-import subprocess
 from datetime import datetime, timedelta
 import argparse
+import subprocess
 
 class BusinessProcessDataGenerator:
-    def __init__(self, num_rows=10000):
+    def __init__(self, num_rows=100000):
         self.num_rows = num_rows
-        self.employee_ids = range(1, 501)
-        self.client_ids = range(1, 1001)
+        self.employee_ids = list(range(1, 501))
+        self.client_ids = list(range(1, 1001))
         self.industries = ['Finance', 'Healthcare', 'Retail', 'Technology', 'Manufacturing']
         self.roles = ['Manager', 'Analyst', 'Developer', 'Consultant', 'Support']
         self.statuses = ['Initiated', 'Reviewed', 'Approved', 'Pending', 'Completed', 'Revised', 'Escalated', 'Resolved', 'Closed', 'Cancelled']
@@ -28,6 +28,7 @@ class BusinessProcessDataGenerator:
             'Closed': [],
             'Cancelled': []
         }
+        self.thresholds = {status: random.randint(1, 20) for status in self.statuses}
 
     def random_date(self, start, end):
         return start + timedelta(seconds=random.randint(0, int((end - start).total_seconds())))
@@ -70,6 +71,8 @@ class BusinessProcessDataGenerator:
                 last_modified_date = last_status_record['case_updated_date']
                 time_since_last_modified = (case_updated_date - last_modified_date).days
 
+            threshold = self.thresholds[current_status]
+
             case_status_history[case_id].append({
                 'employee_id': employee_id,
                 'division': division,
@@ -85,19 +88,22 @@ class BusinessProcessDataGenerator:
                 'case_updated_date': case_updated_date,
                 'current_status': current_status,
                 'time_since_created': time_since_created,
-                'time_since_last_modified': time_since_last_modified
+                'time_since_last_modified': time_since_last_modified,
+                'threshold': threshold
             })
 
             data.append([
                 employee_id, division, department, team, role, client_id, industry,
                 emp_onboard_date, client_onboard_date, case_id, case_created_date,
-                case_updated_date, current_status, time_since_created, time_since_last_modified
+                case_updated_date, current_status, time_since_created, time_since_last_modified,
+                threshold
             ])
 
         columns = [
             'Employee ID', 'Division', 'Department', 'Team', 'Role', 'Client ID', 'Client Industry',
             'Employee Onboarding Date', 'Client Onboarding Date', 'Case ID', 'Case Created Date',
-            'Case Updated Date', 'Case Status', 'Time Since Created', 'Time Since Last Modified'
+            'Case Updated Date', 'Case Status', 'Time Since Created', 'Time Since Last Modified',
+            'Threshold'
         ]
         df = pd.DataFrame(data, columns=columns)
         return df
