@@ -4,6 +4,45 @@ import numpy as np
 from vispy import app, scene
 from vispy.color import Color
 import argparse
+from vispy.util import keys
+
+class CustomTurntablePanCamera(scene.cameras.TurntableCamera):
+    """Turntable camera where RMB-drag pans (translates) instead of zooms."""
+
+    def viewbox_mouse_event(self, event):  # noqa: C901
+        """Custom mouse interaction: RMB pans instead of zoom."""
+
+        if event.handled or not self.interactive:
+            return
+
+        # First, intercept our custom RMB-drag panning.
+        if event.type == 'mouse_move' and 2 in event.buttons and not event.mouse_event.modifiers:
+            if event.press_event is None:
+                return
+
+            # Perform translation similar to default Shift+LMB behaviour.
+            norm = np.mean(self._viewbox.size)
+            if self._event_value is None or len(self._event_value) == 2:
+                self._event_value = self.center
+
+            p1 = event.press_event.pos
+            p2 = event.pos
+            dist = (p1 - p2) / norm * self._scale_factor
+            dist[1] *= -1
+
+            dx, dy, dz = self._dist_to_trans(dist)
+            ff = self._flip_factors
+            up, forward, right = self._get_dim_vectors()
+            dx, dy, dz = right * dx + forward * dy + up * dz
+            dx, dy, dz = ff[0] * dx, ff[1] * dy, dz * ff[2]
+
+            c = self._event_value
+            self.center = c[0] + dx, c[1] + dy, c[2] + dz
+            event.handled = True
+            return  # Skip parent handling to avoid default zoom
+
+        # For all other cases, fall back to the default TurntableCamera behaviour.
+        super().viewbox_mouse_event(event)
 
 class BasicVispyVisualization:
     def __init__(self, data, case_spacing=10, team_spacing=20, dept_spacing=100, div_spacing=200, time_scale=1, height_scaling_factor=10, enable_arcs=True):
@@ -82,21 +121,6 @@ class BasicVispyVisualization:
         else:
             self.text.visible = False
 
-    def on_mouse_press(self, event):
-        if event.button == 2:  # Right click
-            self.pan = True
-            self.pan_start = event.pos
-
-    def on_mouse_release(self, event):
-        if event.button == 2:  # Right click
-            self.pan = False
-
-    def on_mouse_move(self, event):
-        if self.pan:
-            pan_diff = event.pos - self.pan_start
-            self.view.camera.center += np.array([pan_diff[0], -pan_diff[1], 0]) * 0.01
-            self.pan_start = event.pos
-
     def visualize(self):
         canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
         self.view = canvas.central_widget.add_view()
@@ -127,11 +151,8 @@ class BasicVispyVisualization:
         self.text = scene.visuals.Text('', color='white', anchor_x='left', parent=self.view.scene)
         self.text.visible = False
 
-        self.view.camera = scene.cameras.TurntableCamera(up='z', fov=45)
+        self.view.camera = CustomTurntablePanCamera(up='z', fov=45)
         canvas.events.mouse_move.connect(self.on_hover)
-        canvas.events.mouse_press.connect(self.on_mouse_press)
-        canvas.events.mouse_release.connect(self.on_mouse_release)
-        canvas.events.mouse_move.connect(self.on_mouse_move)
 
         # Add arcs to connect statuses (optional – can be a performance hog)
         if self.enable_arcs:
