@@ -1,18 +1,19 @@
 from create_data import BusinessProcessDataGenerator
 from process_visualizer import BasicVispyVisualization
 import argparse
+import pandas as pd
 
 class RunVisualizer:
     def __init__(self):
         pass
-        generator = BusinessProcessDataGenerator()
+        self.generator = BusinessProcessDataGenerator()
     
     def generate_date(self):
-        business_data = generator.generate()
+        self.business_data = self.generator.generate()
         
     def execute(self):
         
-        visualizer = BasicVispyVisualization(business_data)
+        visualizer = BasicVispyVisualization(self.business_data)
         visualizer.visualize()
 
     # Load data

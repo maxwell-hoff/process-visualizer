@@ -8,7 +8,10 @@ import subprocess
 class BusinessProcessDataGenerator:
     def __init__(self, num_rows=100000):
         self.num_rows = num_rows
-        self.employee_ids = list(range(1, 501))
+        # Keep a master list of all possible employees; a working copy is mutated when
+        # assigning team members so we still know which IDs remain available.
+        self.all_employee_ids = list(range(1, 501))
+        self.employee_ids = self.all_employee_ids.copy()
         self.client_ids = list(range(1, 1001))
         self.industries = ['Finance', 'Healthcare', 'Retail', 'Technology', 'Manufacturing']
         self.roles = ['Manager', 'Analyst', 'Developer', 'Consultant', 'Support']
@@ -106,6 +109,26 @@ class BusinessProcessDataGenerator:
             'Threshold'
         ]
         df = pd.DataFrame(data, columns=columns)
+
+        # Ensure each Case ID touches at least two distinct employees
+        single_emp_cases = df.groupby('Case ID')['Employee ID'].nunique()
+        singles = single_emp_cases[single_emp_cases == 1].index
+
+        for cid in singles:
+            row = df[df['Case ID'] == cid].iloc[0].copy()
+            # pick a different employee
+            alternatives = [e for e in self.all_employee_ids if e != row['Employee ID']]
+            if not alternatives:
+                # Extremely unlikely (only when employee pool has size 1) – skip adding.
+                continue
+            new_emp = random.choice(alternatives)
+            row['Employee ID'] = new_emp
+            row['Time Since Last Modified'] = int(row['Time Since Last Modified']) + random.randint(1, 30)
+            row['Case Updated Date'] = row['Case Updated Date'] + timedelta(days=int(row['Time Since Last Modified']))
+            row['Role'] = random.choice(self.roles)
+            data_row = row.tolist()
+            df.loc[len(df)] = data_row
+
         return df
 
     def next_status(self, last_status):
@@ -117,7 +140,7 @@ class BusinessProcessDataGenerator:
 
 if __name__ == '__main__':  
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_rows', type=int, default=100000)
+    parser.add_argument('--num_rows', type=int, default=100_000)
     args = parser.parse_args()
     generator = BusinessProcessDataGenerator(num_rows=args.num_rows)
     business_data = generator.generate()
