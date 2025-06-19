@@ -48,7 +48,7 @@ class CustomTurntablePanCamera(scene.cameras.TurntableCamera):
         super().viewbox_mouse_event(event)
 
 class BasicVispyVisualization:
-    def __init__(self, data, anim_duration=20, hierarchy=None, height_scaling_factor=10, enable_arcs=True):
+    def __init__(self, data, anim_duration=20, hierarchy=None, arc_height_factor=0.15, enable_arcs=True):
         self.data = data
 
         # Hierarchy definition (outer → inner)
@@ -57,14 +57,23 @@ class BasicVispyVisualization:
         self.hierarchy = hierarchy
 
         self.anim_duration = anim_duration  # seconds
-        self.height_scaling_factor = height_scaling_factor
+        self.arc_height_factor = arc_height_factor  # relative peak height (fraction of XY distance)
+        self.enable_arcs = enable_arcs and len(self.data) <= 20_000
+        self.paused = False
+        self.pan = False
 
-        # Compute hierarchical nested positions
+        # Timestamp numeric column first
+        self.data['__ts__'] = pd.to_datetime(self.data['Case Updated Date']).astype('int64') // 1_000_000_000  # to seconds
+
+        # Compute XY positions now that hierarchy is known
         self._assign_nested_positions()
 
-        self.data['__ts__'] = pd.to_datetime(self.data['Case Updated Date']).astype('int64') // 1_000_000_000  # to seconds
+        # Timeline bounds
         self.start_ts = self.data['__ts__'].min()
         self.end_ts = self.data['__ts__'].max()
+        self.current_ts = self.start_ts
+
+        # Role → colour mapping
         self.role_colors = {
             'Manager': 'red',
             'Analyst': 'green',
@@ -72,14 +81,47 @@ class BasicVispyVisualization:
             'Consultant': 'yellow',
             'Support': 'magenta'
         }
-        self.enable_arcs = enable_arcs and len(self.data) <= 20_000
-        self.paused = False
-        self.current_ts = self.start_ts
-        self.pan = False
+
+        # Pre-compute animated link (arc) geometry (needs __ts__ and positions ready)
+        self.links = []
+        if self.enable_arcs:
+            self._build_links()
 
     # ------------------------------------------------------------------
     # Hierarchical layout helpers
     # ------------------------------------------------------------------
+
+    def _build_links(self):
+        """Create per-transition Line visuals prepared for animated drawing."""
+        for case_id, case_df in self.data.groupby('Case ID'):
+            case_df = case_df.sort_values('__ts__')
+            if len(case_df) < 2:
+                continue
+            for i in range(len(case_df) - 1):
+                start_row = case_df.iloc[i]
+                end_row = case_df.iloc[i + 1]
+
+                start_pos = np.array([start_row['X'], start_row['Y'], 0.0], dtype=float)
+                end_pos = np.array([end_row['X'], end_row['Y'], 0.0], dtype=float)
+
+                # Peak point defines a simple quadratic Bezier in 3-D.
+                mid_xy_dist = np.linalg.norm(start_pos[:2] - end_pos[:2])
+                peak = (start_pos + end_pos) / 2.0
+                peak[2] = mid_xy_dist * self.arc_height_factor
+
+                line_vis = scene.visuals.Line(  # start with a degenerate 2-point line
+                    pos=np.vstack([start_pos, start_pos]),
+                    color=self.role_colors[start_row['Role']],
+                )
+                line_vis.visible = False  # will be shown when animation reaches it
+                self.links.append({
+                    'start_ts': start_row['__ts__'],
+                    'end_ts': end_row['__ts__'],
+                    'p0': start_pos,
+                    'p1': peak,
+                    'p2': end_pos,
+                    'visual': line_vis,
+                })
 
     def _assign_nested_positions(self):
         """Assign X, Y coordinates to each row based on the hierarchy."""
@@ -236,29 +278,13 @@ class BasicVispyVisualization:
         # Key controls
         canvas.events.key_press.connect(self.on_key_press)
 
+        # Add link visuals to the scene (after camera created)
+        for link in self.links:
+            self.view.add(link['visual'])
+
         # Animation timer
         self.t0 = time.perf_counter()
         self.timer = app.Timer('auto', connect=self.on_timer, start=True)
-
-        # Add arcs to connect statuses (optional – can be a performance hog)
-        if self.enable_arcs:
-            for case_id, case_data in self.data.groupby('Case ID'):
-                case_data = case_data.sort_values('Case Updated Date')
-                for i in range(len(case_data) - 1):
-                    start = [case_data.iloc[i]['X'], case_data.iloc[i]['Y'], 0]
-                    end = [case_data.iloc[i + 1]['X'], case_data.iloc[i + 1]['Y'], 0]
-                    duration = case_data.iloc[i + 1]['Time Since Last Modified']
-                    arc_height = duration / self.height_scaling_factor  # Scaling factor for arc height
-
-                    intermediate_point = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2, arc_height]
-                    line_color = self.role_colors[case_data.iloc[i]['Role']]
-                    line = scene.visuals.Line(pos=np.array([start, intermediate_point, end]), color=line_color)
-                    self.view.add(line)
-
-        # Add legend
-        for i, (role, color) in enumerate(self.role_colors.items()):
-            legend_text = scene.visuals.Text(f"{role}", color=color, pos=(10, 10 + i * 20), parent=canvas.scene)
-            legend_text.font_size = 12  # Adjust font size if necessary
 
         app.run()
 
@@ -273,6 +299,35 @@ class BasicVispyVisualization:
         else:
             self.scatter.visible = False
 
+    def _update_links(self):
+        """Progressively draw lines according to the current timestamp."""
+        if not self.enable_arcs:
+            return
+
+        for link in self.links:
+            if self.current_ts < link['start_ts']:
+                link['visual'].visible = False
+                continue
+
+            total_dt = link['end_ts'] - link['start_ts']
+            if total_dt <= 0:
+                progress = 1.0 if self.current_ts >= link['end_ts'] else 0.0
+            else:
+                progress = min(1.0, (self.current_ts - link['start_ts']) / total_dt)
+
+            if progress == 0.0:
+                link['visual'].visible = False
+                continue
+
+            link['visual'].visible = True
+
+            # Quadratic Bezier sampling for smooth arc
+            samples = 20
+            t_vals = np.linspace(0, progress, samples)
+            p0, p1, p2 = link['p0'], link['p1'], link['p2']
+            pts = ((1 - t_vals) ** 2)[:, None] * p0 + 2 * ((1 - t_vals) * t_vals)[:, None] * p1 + (t_vals ** 2)[:, None] * p2
+            link['visual'].set_data(pts)
+
     def on_timer(self, event):
         if self.paused:
             return
@@ -280,27 +335,31 @@ class BasicVispyVisualization:
         frac = (elapsed % self.anim_duration) / self.anim_duration
         self.current_ts = self.start_ts + frac * (self.end_ts - self.start_ts)
         self._update_scatter()
+        self._update_links()
 
     def on_key_press(self, event):
         if event.key == keys.SPACE:
             self.paused = not self.paused
             if not self.paused:
                 # resume timeline origin to maintain continuity
-                self.t0 = time.perf_counter() - (self.current_ts - self.start_ts) * self.anim_duration / (self.end_ts - self.start_ts)
+                if self.end_ts != self.start_ts:
+                    self.t0 = time.perf_counter() - (self.current_ts - self.start_ts) * self.anim_duration / (self.end_ts - self.start_ts)
         elif event.key == keys.RIGHT:
             step = (self.end_ts - self.start_ts) * 0.01  # 1% step
             self.current_ts = min(self.current_ts + step, self.end_ts)
             self._update_scatter()
+            self._update_links()
         elif event.key == keys.LEFT:
             step = (self.end_ts - self.start_ts) * 0.01
             self.current_ts = max(self.current_ts - step, self.start_ts)
             self._update_scatter()
+            self._update_links()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Visualize business process data")
     parser.add_argument('--data_path', type=str, default='data/business_process_data.csv', help="Path to the CSV file containing the data")
     parser.add_argument('--anim_duration', type=int, default=20, help="Duration of the animation")
-    parser.add_argument('--height_scaling_factor', type=int, default=10, help="Scaling factor for arc height")
+    parser.add_argument('--arc_height_factor', type=float, default=0.05, help="Relative peak height of arcs (fraction of XY distance)")
     parser.add_argument('--no_arcs', action='store_true', help="Skip drawing arcs (useful for large datasets)")
     
     args = parser.parse_args()
@@ -309,7 +368,7 @@ if __name__ == '__main__':
     visualizer = BasicVispyVisualization(
         data
         , anim_duration=args.anim_duration
-        , height_scaling_factor=args.height_scaling_factor
+        , arc_height_factor=args.arc_height_factor
         , enable_arcs=not args.no_arcs
     )
     visualizer.visualize()
