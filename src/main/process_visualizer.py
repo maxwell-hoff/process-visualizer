@@ -48,7 +48,7 @@ class CustomTurntablePanCamera(scene.cameras.TurntableCamera):
         super().viewbox_mouse_event(event)
 
 class BasicVispyVisualization:
-    def __init__(self, data, anim_duration=20, hierarchy=None, arc_height_factor=0.15, enable_arcs=True):
+    def __init__(self, data, anim_duration=20, hierarchy=None, arc_height_factor=0.15, min_node_spacing=0.05, enable_arcs=True):
         self.data = data
 
         # Hierarchy definition (outer → inner)
@@ -58,12 +58,16 @@ class BasicVispyVisualization:
 
         self.anim_duration = anim_duration  # seconds
         self.arc_height_factor = arc_height_factor  # relative peak height (fraction of XY distance)
+        self.min_node_spacing = min_node_spacing
         self.enable_arcs = enable_arcs and len(self.data) <= 20_000
         self.paused = False
         self.pan = False
 
         # Timestamp numeric column first
         self.data['__ts__'] = pd.to_datetime(self.data['Case Updated Date']).astype('int64') // 1_000_000_000  # to seconds
+
+        # Compute span based on dataset size to maintain approximate spacing
+        self.root_span = max(1.0, math.sqrt(len(self.data)) * self.min_node_spacing)
 
         # Compute XY positions now that hierarchy is known
         self._assign_nested_positions()
@@ -189,8 +193,8 @@ class BasicVispyVisualization:
                 rects[child_path] = child_rect
                 subdivide(node[child], child_rect, child_path)
 
-        # Start subdivision with the whole [0,1]x[0,1] square.
-        subdivide(tree, (0.0, 0.0, 1.0, 1.0), tuple())
+        # Start subdivision with the root square sized according to dataset.
+        subdivide(tree, (0.0, 0.0, self.root_span, self.root_span), tuple())
 
         # Now assign each row a coordinate inside its employee rectangle path
         xs = []
@@ -292,7 +296,10 @@ class BasicVispyVisualization:
         axis.transform = scene.transforms.MatrixTransform()
         span_x = max(x) - min(x)
         span_y = max(y) - min(y)
-        axis.transform.scale([span_x if span_x else 1, span_y if span_y else 1, 1])
+        # Ensure non-zero spans and provide reasonable default when tiny
+        span_x = span_x if span_x else self.root_span
+        span_y = span_y if span_y else self.root_span
+        axis.transform.scale([span_x, span_y, 1])
         axis.set_data(color='white')
 
         self.text = scene.visuals.Text('', color='white', anchor_x='left', parent=self.view.scene)
@@ -386,6 +393,7 @@ if __name__ == '__main__':
     parser.add_argument('--data_path', type=str, default='data/business_process_data.csv', help="Path to the CSV file containing the data")
     parser.add_argument('--anim_duration', type=int, default=20, help="Duration of the animation")
     parser.add_argument('--arc_height_factor', type=float, default=0.05, help="Relative peak height of arcs (fraction of XY distance)")
+    parser.add_argument('--min_node_spacing', type=float, default=0.05, help="Desired minimum spacing between nodes (larger = spread out more)")
     parser.add_argument('--no_arcs', action='store_true', help="Skip drawing arcs (useful for large datasets)")
     
     args = parser.parse_args()
@@ -395,6 +403,7 @@ if __name__ == '__main__':
         data
         , anim_duration=args.anim_duration
         , arc_height_factor=args.arc_height_factor
+        , min_node_spacing=args.min_node_spacing
         , enable_arcs=not args.no_arcs
     )
     visualizer.visualize()
